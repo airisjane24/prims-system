@@ -42,30 +42,41 @@ class DocumentService
 
             if ($request->hasFile('file')) {
                 $file = $request->file('file');
-                $ocrText = $this->extractTextFromFile($file);
+               $ocrText = $this->extractTextFromFile($file);
 
-                if (strlen(trim($ocrText)) < 30) {
-                    return $this->reject('Failed to upload document or image is blurry.');
-                }
+if (strlen(trim($ocrText)) < 30) {
+    return $this->reject('Failed to upload document or image is blurry.');
+}
+
 
                 if ($this->checkForInappropriateContent($ocrText)) {
-                    return $this->reject('Inappropriate content detected.');
+                    session()->flash('error', 'Inappropriate content detected. Upload rejected.');
+                    return [
+                        'error_code' => MyConstant::FAILED_CODE,
+                        'status_code' => MyConstant::BAD_REQUEST,
+                        'message' => 'Inappropriate content detected. Upload rejected.',
+                    ];
                 }
 
                 $documentType = $this->determineDocumentType($ocrText);
 
                 if ($documentType === 'Verification Certificate') {
-                    return $this->reject('Unable to identify document type.');
+                    session()->flash('error', 'Failed to upload document or image is blurry, please try again.');
+                    return [
+                        'error_code' => MyConstant::FAILED_CODE,
+                        'status_code' => MyConstant::BAD_REQUEST,
+                        'message' => 'Failed to upload document or image is blurry, please try again.',
+                    ];
                 }
 
-                $directory = public_path("assets/documents/{$documentType}");
+                $directory = public_path('assets/documents/' . $documentType);
+
                 if (!file_exists($directory)) {
                     mkdir($directory, 0777, true);
                 }
 
-                $fileName = time() . '_' . $file->getClientOriginalName();
+                $fileName = basename($file->getClientOriginalName());
                 $file->move($directory, $fileName);
-
                 $document->document_type = $documentType;
                 $document->file = $fileName;
             }
@@ -74,19 +85,121 @@ class DocumentService
             $document->uploaded_by = $request->uploaded_by;
             $document->save();
 
-            Notification::create([
-                'type' => 'Document',
-                'message' => 'A new document has been uploaded by ' . Auth::user()->name,
-                'is_read' => 0
-            ]);
+            $notification = new Notification();
+            $notification->type = 'Document';
+            $notification->message = 'A new document has been uploaded by ' . Auth::user()->name;
+            $notification->is_read = '0';
+            $notification->save();
 
             session()->flash('success', 'Document created successfully');
-            return $this->success('Document created successfully');
-
+            return [
+                'error_code' => MyConstant::SUCCESS_CODE,
+                'status_code' => MyConstant::OK,
+                'message' => 'Document created successfully',
+            ];
         } catch (QueryException $e) {
-            return $this->error();
+            session()->flash('error', 'Internal server error');
+            return [
+                'error_code' => MyConstant::FAILED_CODE,
+                'status_code' => MyConstant::INTERNAL_SERVER_ERROR,
+                'message' => 'Internal server error',
+            ];
         }
     }
+
+    public function update($request, $id)
+    {
+        $validator = Validator::make($request->all(), $this->validator->documentValidator());
+
+        if ($validator->fails()) {
+            session()->flash('error', $validator->errors()->first());
+            return [
+                'error_code' => MyConstant::FAILED_CODE,
+                'status_code' => MyConstant::BAD_REQUEST,
+                'message' => $validator->errors()->first(),
+            ];
+        }
+
+        try {
+            $document = Document::find($id);
+
+            if (!$document) {
+                session()->flash('error', 'Document not found');
+                return [
+                    'error_code' => MyConstant::FAILED_CODE,
+                    'status_code' => MyConstant::NOT_FOUND,
+                    'message' => 'Document not found',
+                ];
+            }
+
+            if ($request->hasFile('file')) {
+                $file = $request->file('file');
+                $ocrText = $this->extractTextFromFile($file);
+
+                if (empty(trim($ocrText))) {
+                    session()->flash('error', 'Failed to upload document or image is blurry, please try again.');
+                    return [
+                        'error_code' => MyConstant::FAILED_CODE,
+                        'status_code' => MyConstant::BAD_REQUEST,
+                        'message' => 'Failed to upload document or image is blurry, please try again.',
+                    ];
+                }
+
+                if ($this->checkForInappropriateContent($ocrText)) {
+                    session()->flash('error', 'Inappropriate content detected. Update rejected.');
+                    return [
+                        'error_code' => MyConstant::FAILED_CODE,
+                        'status_code' => MyConstant::BAD_REQUEST,
+                        'message' => 'Inappropriate content detected. Update rejected.',
+                    ];
+                }
+
+                $documentType = $this->determineDocumentType($ocrText);
+
+                if ($documentType === 'Verification Certificate') {
+                    session()->flash('error', 'Failed to upload document or image is blurry, please try again.');
+                    return [
+                        'error_code' => MyConstant::FAILED_CODE,
+                        'status_code' => MyConstant::BAD_REQUEST,
+                        'message' => 'Failed to upload document or image is blurry, please try again.',
+                    ];
+                }
+
+                $fileName = basename($file->getClientOriginalName());
+
+                if (file_exists(public_path('assets/documents/' . $document->document_type . '/' . $document->file))) {
+                    unlink(public_path('assets/documents/' . $document->document_type . '/' . $document->file));
+                }
+
+                $directory = public_path('assets/documents/' . $documentType);
+
+                if (!file_exists($directory)) {
+                    mkdir($directory, 0777, true);
+                }
+
+                $file->move($directory, $fileName);
+                $document->file = $fileName;
+                $document->document_type = $documentType;
+            }
+
+            $document->update($request->except('file'));
+
+            session()->flash('success', 'Document updated successfully');
+            return [
+                'error_code' => MyConstant::SUCCESS_CODE,
+                'status_code' => MyConstant::OK,
+                'message' => 'Document updated successfully',
+            ];
+        } catch (QueryException $e) {
+            session()->flash('error', 'Internal server error');
+            return [
+                'error_code' => MyConstant::FAILED_CODE,
+                'status_code' => MyConstant::INTERNAL_SERVER_ERROR,
+                'message' => 'Internal server error',
+            ];
+        }
+    }
+
 
     /* =========================================================
      | TEXT EXTRACTION (ANY FORMAT)
@@ -203,6 +316,42 @@ class DocumentService
         return file_exists($out . '.txt') ? file_get_contents($out . '.txt') : '';
     }
 
+    public function restoreDocument($id)
+    {
+        try {
+            // Find the document, including trashed ones
+            $document = Document::withTrashed()->find($id);
+
+            if (!$document) {
+                // If the document is not found, return a failure response
+                return [
+                    'error_code' => MyConstant::FAILED_CODE,
+                    'status_code' => MyConstant::NOT_FOUND,
+                    'message' => 'Document not found',
+                ];
+            }
+
+            // Restore the document
+            $document->restore();
+
+            session()->flash('success', 'Document restored successfully');
+            return [
+                'error_code' => MyConstant::SUCCESS_CODE,
+                'status_code' => MyConstant::OK,
+                'message' => 'Document restored successfully',
+            ];
+
+        } catch (QueryException $e) {
+            session()->flash('error', 'Internal server error');
+            return [
+                'error_code' => MyConstant::FAILED_CODE,
+                'status_code' => MyConstant::INTERNAL_SERVER_ERROR,
+                'message' => 'Internal server error',
+            ];
+        }
+    }
+
+
     /* =========================================================
      | AI CONTENT CHECK
      ========================================================= */
@@ -235,13 +384,43 @@ class DocumentService
         ];
     }
 
-    private function error()
+    public function destroy($id)
     {
-        session()->flash('error', 'Internal server error');
-        return [
-            'error_code' => MyConstant::FAILED_CODE,
-            'status_code' => MyConstant::INTERNAL_SERVER_ERROR,
-            'message' => 'Internal server error',
-        ];
+        try {
+            $document = Document::find($id);
+
+            if (!$document) {
+                return [
+                    'error_code' => MyConstant::FAILED_CODE,
+                    'status_code' => MyConstant::NOT_FOUND,
+                    'message' => 'Document not found',
+                ];
+            }
+
+            if (file_exists(public_path('assets/documents/' . $document->file))) {
+                unlink(public_path('assets/documents/' . $document->file));
+            }
+
+            $oldOutPath = public_path('assets/documents/out_' . pathinfo($document->file, PATHINFO_FILENAME));
+            if (file_exists($oldOutPath . '.txt')) {
+                unlink($oldOutPath . '.txt');
+            }
+
+            $document->delete();
+
+            session()->flash('success', 'Document deleted successfully');
+            return [
+                'error_code' => MyConstant::SUCCESS_CODE,
+                'status_code' => MyConstant::OK,
+                'message' => 'Document deleted successfully',
+            ];
+        } catch (QueryException $e) {
+            session()->flash('error', 'Internal server error');
+            return [
+                'error_code' => MyConstant::FAILED_CODE,
+                'status_code' => MyConstant::INTERNAL_SERVER_ERROR,
+                'message' => 'Internal server error',
+            ];
+        }
     }
 }
